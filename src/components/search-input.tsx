@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Search, Mic } from "lucide-react";
+// import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { VoiceInputSheet } from "./voice-input-sheet";
@@ -23,7 +23,9 @@ export function SearchInput() {
     <>
       <div className="relative w-full max-w-md mx-auto">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+          <span className="material-symbols-outlined absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" style={{ fontSize: '16px' }}>
+            search
+          </span>
           <Input
             type="text"
             placeholder="Where do you want to go?"
@@ -37,7 +39,9 @@ export function SearchInput() {
             onClick={handleMicClick}
             className="absolute right-1 top-1/2 transform -translate-y-1/2 h-10 w-10 hover:bg-muted mobile-tap"
           >
-            <Mic className="h-5 w-5 text-muted-foreground" />
+            <span className="material-symbols-outlined text-muted-foreground" style={{ fontSize: '20px' }}>
+              mic
+            </span>
           </Button>
         </div>
       </div>

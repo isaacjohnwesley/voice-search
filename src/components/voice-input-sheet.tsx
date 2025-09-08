@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Mic, Square } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+// import { Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -22,30 +22,14 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const [isListening, setIsListening] = useState(false);
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
-  // Mock speech recognition for now (will be replaced with Sarvam API)
-  const [mockRecognition] = useState({
-    start: () => {
-      setIsListening(true);
-      setError(null);
-      // Simulate transcription after 2 seconds
-      setTimeout(() => {
-        setTranscribedText("Take me to Central Park");
-        setIsListening(false);
-        setIsRecording(false);
-      }, 2000);
-    },
-    stop: () => {
-      setIsListening(false);
-      setIsRecording(false);
-    },
-    abort: () => {
-      setIsListening(false);
-      setIsRecording(false);
-    }
-  });
+  // MediaRecorder and audio stream references
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
 
-  const requestMicrophonePermission = async () => {
+  const requestMicrophonePermission = useCallback(async () => {
     try {
       // Check if getUserMedia is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -92,8 +76,29 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       setPermissionGranted(true);
       setError(null);
       
-      // Stop the stream immediately as we just needed permission
-      stream.getTracks().forEach(track => track.stop());
+      // Set up MediaRecorder
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      setMediaRecorder(recorder);
+      setAudioStream(stream);
+      
+      // Set up event handlers
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          setAudioChunks(prev => [...prev, event.data]);
+        }
+      };
+      
+      recorder.onstop = () => {
+        handleRecordingStop();
+      };
+      
+      // Auto-start recording after permission is granted
+      setTimeout(() => {
+        startRecording();
+      }, 500); // Small delay to ensure UI updates
     } catch (err: unknown) {
       console.error("Microphone permission error:", err);
       
@@ -118,7 +123,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       setError(errorMessage);
       setPermissionGranted(false);
     }
-  };
+  }, []);
 
   const startRecording = () => {
     if (!permissionGranted) {
@@ -126,16 +131,65 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       return;
     }
     
+    if (!mediaRecorder) {
+      setError("MediaRecorder not initialized");
+      return;
+    }
+    
     setIsRecording(true);
+    setIsListening(true);
     setTranscribedText("");
     setError(null);
-    mockRecognition.start();
+    setAudioChunks([]);
+    
+    // Start recording
+    mediaRecorder.start(1000); // Collect data every second
   };
 
   const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
     setIsRecording(false);
     setIsListening(false);
-    mockRecognition.stop();
+  };
+
+  const handleRecordingStop = async () => {
+    setIsTranscribing(true);
+    
+    try {
+      // Create audio blob from chunks
+      const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+      
+      // Create form data for API
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+      
+      // Send to our API route
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error('Transcription failed');
+      }
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        setTranscribedText(result.transcript);
+        console.log('Transcription result:', result);
+      } else {
+        setError(result.error || 'Transcription failed');
+      }
+      
+    } catch (err) {
+      console.error('Transcription error:', err);
+      setError('Failed to transcribe audio. Please try again.');
+    } finally {
+      setIsTranscribing(false);
+    }
   };
 
   const handleSubmit = () => {
@@ -148,8 +202,18 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     if (isRecording) {
       stopRecording();
     }
+    
+    // Clean up audio stream
+    if (audioStream) {
+      audioStream.getTracks().forEach(track => track.stop());
+      setAudioStream(null);
+    }
+    
+    setMediaRecorder(null);
+    setAudioChunks([]);
     setTranscribedText("");
     setError(null);
+    setIsTranscribing(false);
     onClose();
   };
 
@@ -198,15 +262,20 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     checkPermissionStatus();
   }, []);
 
-  // Reset state when sheet opens
+  // Reset state when sheet opens and auto-request permission
   useEffect(() => {
     if (isOpen) {
       setTranscribedText("");
       setError(null);
       setIsRecording(false);
       setIsListening(false);
+      
+      // Auto-request microphone permission when sheet opens
+      if (!permissionGranted) {
+        requestMicrophonePermission();
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, permissionGranted, requestMicrophonePermission]);
 
   return (
     <Sheet open={isOpen} onOpenChange={handleClose}>
@@ -224,9 +293,13 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                 : "bg-muted"
             }`}>
               {isRecording || isListening ? (
-                <Mic className="h-12 w-12 text-red-500" />
+                <span className="material-symbols-outlined text-red-500" style={{ fontSize: '48px' }}>
+                  mic
+                </span>
               ) : (
-                <Mic className="h-12 w-12 text-muted-foreground" />
+                <span className="material-symbols-outlined text-muted-foreground" style={{ fontSize: '48px' }}>
+                  mic
+                </span>
               )}
             </div>
             
@@ -257,6 +330,8 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                   </div>
                 )}
               </div>
+            ) : isTranscribing ? (
+              <p className="text-muted-foreground">Transcribing...</p>
             ) : isListening ? (
               <p className="text-muted-foreground">Listening...</p>
             ) : transcribedText ? (
@@ -273,9 +348,12 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
 
           {/* Action Buttons */}
           <div className="flex space-x-4">
-            {!permissionGranted ? (
-              <Button onClick={requestMicrophonePermission} className="px-6 mobile-tap">
-                Allow Microphone
+            {isTranscribing ? (
+              <Button disabled className="px-6 mobile-tap">
+                <span className="material-symbols-outlined mr-2 animate-spin" style={{ fontSize: '16px' }}>
+                  hourglass_empty
+                </span>
+                Transcribing...
               </Button>
             ) : isRecording || isListening ? (
               <Button 
@@ -283,17 +361,28 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                 variant="destructive"
                 className="px-6 mobile-tap"
               >
-                <Square className="h-4 w-4 mr-2" />
+                <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
+                  stop
+                </span>
                 Stop Recording
               </Button>
-            ) : (
+            ) : permissionGranted ? (
               <Button onClick={startRecording} className="px-6 mobile-tap">
-                <Mic className="h-4 w-4 mr-2" />
+                <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
+                  mic
+                </span>
                 Start Recording
+              </Button>
+            ) : (
+              <Button onClick={requestMicrophonePermission} className="px-6 mobile-tap">
+                <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
+                  mic
+                </span>
+                Allow Microphone
               </Button>
             )}
 
-            {transcribedText && (
+            {transcribedText && !isTranscribing && (
               <Button onClick={handleSubmit} className="px-6 mobile-tap">
                 Use This Text
               </Button>

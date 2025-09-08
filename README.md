@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Rapido Voice Search
 
-## Getting Started
+A voice-powered ride-hailing search prototype built with Next.js and Sarvam AI's Speech to Text Translate API.
 
-First, run the development server:
+## Features
+
+- 🎤 **Real-time voice recording** using MediaRecorder API
+- 🌍 **Multi-language support** with automatic translation to English
+- 📱 **Mobile-optimized** interface with Material Design icons
+- 🎯 **Ride-hailing focused** with location search capabilities
+
+## Setup
+
+### 1. Install Dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure Sarvam AI API
+
+1. Get your API key from [Sarvam AI](https://sarvam.ai/)
+2. Copy `.env.local.example` to `.env.local`:
+   ```bash
+   cp .env.local.example .env.local
+   ```
+3. Add your Sarvam API key to `.env.local`:
+   ```
+   SARVAM_API_KEY=your_actual_api_key_here
+   ```
+
+### 3. Run Development Server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## API Integration
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+This app uses [Sarvam AI's Speech to Text Translate API](https://docs.sarvam.ai/api-reference-docs/speech-to-text/translate) which:
 
-## Learn More
+- **Automatically detects** the input language
+- **Transcribes** speech to text
+- **Translates** to English
+- **Supports** multiple audio formats (WAV, MP3, WebM, etc.)
 
-To learn more about Next.js, take a look at the following resources:
+## Usage
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. **Click the microphone icon** in the search input
+2. **Allow microphone access** when prompted
+3. **Speak your destination** (e.g., "Take me to Central Park")
+4. **Wait for transcription** to complete
+5. **Click "Use This Text"** to insert the result
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Tech Stack
 
-## Deploy on Vercel
+- **Next.js 15** - React framework
+- **TypeScript** - Type safety
+- **Tailwind CSS** - Styling
+- **Shadcn UI** - Component library
+- **Material Icons** - Icon system
+- **Sarvam AI** - Speech to text API
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deployment
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The app is ready for deployment on Vercel, Netlify, or any other platform that supports Next.js.
+
+Make sure to set the `SARVAM_API_KEY` environment variable in your deployment platform.

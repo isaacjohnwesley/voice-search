@@ -1,5 +1,4 @@
 import { SearchInput } from "@/components/search-input";
-import { MapPin } from "lucide-react";
 
 export default function Home() {
   return (
@@ -18,7 +17,9 @@ export default function Home() {
         <div className="flex-1 flex items-center justify-center p-4">
           <div className="text-center space-y-4">
             <div className="w-16 h-16 mx-auto bg-muted rounded-full flex items-center justify-center">
-              <MapPin className="w-8 h-8 text-muted-foreground" />
+              <span className="material-symbols-outlined text-muted-foreground" style={{ fontSize: '32px' }}>
+                location_on
+              </span>
             </div>
             <div className="space-y-2">
               <h2 className="text-lg font-semibold text-muted-foreground">
