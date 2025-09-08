@@ -37,6 +37,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const audioChunksRef = useRef<Blob[]>([]);
   const hasAutoStarted = useRef(false);
   const autoStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
 
   // Helper function to create WAV blob from audio data
   const createWavBlob = (audioData: Float32Array[], sampleRate: number): Blob => {
@@ -371,6 +372,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       setAudioStream(null);
     }
     
+    
     setMediaRecorder(null);
     setAudioChunks([]);
     audioChunksRef.current = []; // Clear ref chunks
@@ -550,7 +552,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
               <p className="text-muted-foreground">Initializing recorder...</p>
             ) : isListening ? (
               <div className="space-y-1">
-                <p className="text-muted-foreground">Listening...</p>
+                <p className="text-muted-foreground">Listening... Click &ldquo;Stop Now&rdquo; when finished</p>
                 {recordingDuration > 0 && (
                   <p className="text-sm text-muted-foreground">
                     Recording: {recordingDuration}s
@@ -593,13 +595,13 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
             ) : isRecording || isListening ? (
               <Button 
                 onClick={stopRecording} 
-                variant="destructive"
+                variant="outline"
                 className="px-6 mobile-tap"
               >
                 <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
                   stop
                 </span>
-                Stop Recording
+                Stop Now
               </Button>
             ) : !permissionGranted ? (
               <Button onClick={requestMicrophonePermission} className="px-6 mobile-tap">
