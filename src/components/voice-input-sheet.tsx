@@ -51,10 +51,10 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         // Check if it's an older browser with different API
         const getUserMedia = navigator.mediaDevices?.getUserMedia || 
-                           (navigator as any).getUserMedia || 
-                           (navigator as any).webkitGetUserMedia || 
-                           (navigator as any).mozGetUserMedia || 
-                           (navigator as any).msGetUserMedia;
+                           (navigator as unknown as { getUserMedia?: unknown }).getUserMedia || 
+                           (navigator as unknown as { webkitGetUserMedia?: unknown }).webkitGetUserMedia || 
+                           (navigator as unknown as { mozGetUserMedia?: unknown }).mozGetUserMedia || 
+                           (navigator as unknown as { msGetUserMedia?: unknown }).msGetUserMedia;
         
         if (!getUserMedia) {
           setError("Microphone access is not supported in this browser. Please use a modern browser like Chrome, Firefox, or Safari.");
@@ -94,23 +94,25 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       
       // Stop the stream immediately as we just needed permission
       stream.getTracks().forEach(track => track.stop());
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Microphone permission error:", err);
       
       let errorMessage = "Microphone permission denied.";
       
-      if (err.name === 'NotAllowedError') {
-        errorMessage = "Microphone permission denied. Please allow microphone access in your browser settings and try again.";
-      } else if (err.name === 'NotFoundError') {
-        errorMessage = "No microphone found. Please connect a microphone and try again.";
-      } else if (err.name === 'NotSupportedError') {
-        errorMessage = "Microphone access is not supported in this browser.";
-      } else if (err.name === 'NotReadableError') {
-        errorMessage = "Microphone is being used by another application. Please close other apps and try again.";
-      } else if (err.name === 'OverconstrainedError') {
-        errorMessage = "Microphone constraints cannot be satisfied. Please try again.";
-      } else if (err.name === 'SecurityError') {
-        errorMessage = "Microphone access blocked due to security restrictions. Please use HTTPS.";
+      if (err instanceof Error) {
+        if (err.name === 'NotAllowedError') {
+          errorMessage = "Microphone permission denied. Please allow microphone access in your browser settings and try again.";
+        } else if (err.name === 'NotFoundError') {
+          errorMessage = "No microphone found. Please connect a microphone and try again.";
+        } else if (err.name === 'NotSupportedError') {
+          errorMessage = "Microphone access is not supported in this browser.";
+        } else if (err.name === 'NotReadableError') {
+          errorMessage = "Microphone is being used by another application. Please close other apps and try again.";
+        } else if (err.name === 'OverconstrainedError') {
+          errorMessage = "Microphone constraints cannot be satisfied. Please try again.";
+        } else if (err.name === 'SecurityError') {
+          errorMessage = "Microphone access blocked due to security restrictions. Please use HTTPS.";
+        }
       }
       
       setError(errorMessage);
@@ -258,7 +260,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
             ) : isListening ? (
               <p className="text-muted-foreground">Listening...</p>
             ) : transcribedText ? (
-              <p className="text-foreground font-medium">"{transcribedText}"</p>
+              <p className="text-foreground font-medium">&ldquo;{transcribedText}&rdquo;</p>
             ) : (
               <p className="text-muted-foreground">
                 {permissionGranted 
