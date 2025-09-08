@@ -11,6 +11,8 @@ export function SearchInput() {
   const [isVoiceSheetOpen, setIsVoiceSheetOpen] = useState(false);
 
   const handleMicClick = () => {
+    // Clear previous search value for new session
+    setSearchValue("");
     setIsVoiceSheetOpen(true);
   };
 

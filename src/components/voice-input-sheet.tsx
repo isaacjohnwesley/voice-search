@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 // import { Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,13 +23,73 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isInitializingRecorder, setIsInitializingRecorder] = useState(false);
 
   // MediaRecorder and audio stream references
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [isRequestingPermission, setIsRequestingPermission] = useState(false);
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  
+  // Use ref to store chunks directly to avoid state timing issues
+  const audioChunksRef = useRef<Blob[]>([]);
+  const hasAutoStarted = useRef(false);
+  const autoStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Helper function to create WAV blob from audio data
+  const createWavBlob = (audioData: Float32Array[], sampleRate: number): Blob => {
+    const length = audioData.reduce((sum, chunk) => sum + chunk.length, 0);
+    const buffer = new ArrayBuffer(44 + length * 2);
+    const view = new DataView(buffer);
+    
+    // WAV header
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, length * 2, true);
+    
+    // Convert float32 to int16
+    let offset = 44;
+    for (const chunk of audioData) {
+      for (let i = 0; i < chunk.length; i++) {
+        const sample = Math.max(-1, Math.min(1, chunk[i]));
+        view.setInt16(offset, sample * 0x7FFF, true);
+        offset += 2;
+      }
+    }
+    
+    return new Blob([buffer], { type: 'audio/wav' });
+  };
 
   const requestMicrophonePermission = useCallback(async () => {
+    if (isRequestingPermission) {
+      return;
+    }
+    
+    // Don't start recording if already recording
+    if (isRecording) {
+      return;
+    }
+    
+    setIsRequestingPermission(true);
+    
     try {
       // Check if getUserMedia is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -58,11 +118,6 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
         return;
       }
 
-      console.log("Requesting microphone permission...");
-      console.log("Current URL:", location.href);
-      console.log("Is secure context:", window.isSecureContext);
-      console.log("Protocol:", location.protocol);
-      console.log("Hostname:", location.hostname);
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -72,35 +127,17 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
         }
       });
       
-      console.log("Microphone permission granted");
       setPermissionGranted(true);
       setError(null);
       
-      // Set up MediaRecorder
-      const recorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
-      
-      setMediaRecorder(recorder);
-      setAudioStream(stream);
-      
-      // Set up event handlers
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          setAudioChunks(prev => [...prev, event.data]);
-        }
-      };
-      
-      recorder.onstop = () => {
-        handleRecordingStop();
-      };
+      // Stop the stream immediately as we just needed permission
+      stream.getTracks().forEach(track => track.stop());
       
       // Auto-start recording after permission is granted
       setTimeout(() => {
         startRecording();
-      }, 500); // Small delay to ensure UI updates
+      }, 100);
     } catch (err: unknown) {
-      console.error("Microphone permission error:", err);
       
       let errorMessage = "Microphone permission denied.";
       
@@ -122,18 +159,89 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       
       setError(errorMessage);
       setPermissionGranted(false);
+    } finally {
+      setIsRequestingPermission(false);
     }
-  }, []);
+  }, [isRequestingPermission, isRecording]);
 
-  const startRecording = () => {
+  const startRecording = async () => {
     if (!permissionGranted) {
       requestMicrophonePermission();
       return;
     }
     
-    if (!mediaRecorder) {
-      setError("MediaRecorder not initialized");
+    // Check if already recording
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
       return;
+    }
+    
+    // If MediaRecorder is not initialized, set it up now
+    if (!mediaRecorder || !audioStream) {
+      setIsInitializingRecorder(true);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        
+        // Try different MIME types for better browser compatibility
+        // Start with audio/webm (without codecs) for Sarvam API compatibility
+        let mimeType = 'audio/webm';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/webm;codecs=opus';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'audio/mp4';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+              mimeType = ''; // Let browser choose
+            }
+          }
+        }
+        
+        
+        const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        
+        setMediaRecorder(recorder);
+        setAudioStream(stream);
+        
+        // Set up event handlers
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            // Store in ref for immediate access
+            audioChunksRef.current.push(event.data);
+            // Also update state for UI purposes
+            setAudioChunks(prev => [...prev, event.data]);
+          }
+        };
+        
+        recorder.onstop = () => {
+          handleRecordingStop();
+        };
+        
+        recorder.onerror = () => {
+          setError('Recording error occurred');
+        };
+        
+        // Now start recording
+        setIsRecording(true);
+        setIsListening(true);
+        setTranscribedText("");
+        setError(null);
+        setAudioChunks([]);
+        audioChunksRef.current = []; // Clear ref chunks
+        
+        recorder.start(100); // Collect data every 100ms for better responsiveness
+        setRecordingStartTime(Date.now());
+        setIsInitializingRecorder(false);
+        return;
+        
+      } catch {
+        setError("Failed to initialize recording. Please try again.");
+        setIsInitializingRecorder(false);
+        return;
+      }
     }
     
     setIsRecording(true);
@@ -143,12 +251,28 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     setAudioChunks([]);
     
     // Start recording
-    mediaRecorder.start(1000); // Collect data every second
+    mediaRecorder.start(100); // Collect data every 100ms for better responsiveness
+    setRecordingStartTime(Date.now());
   };
 
   const stopRecording = () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
+      const recordingDuration = recordingStartTime ? Date.now() - recordingStartTime : 0;
+      
+      // Ensure minimum recording time of 500ms
+      if (recordingDuration < 500) {
+        setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+        }, 500 - recordingDuration);
+      } else {
+        // Request all remaining data before stopping
+        mediaRecorder.requestData();
+        setTimeout(() => {
+          mediaRecorder.stop();
+        }, 100);
+      }
     }
     setIsRecording(false);
     setIsListening(false);
@@ -158,12 +282,54 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     setIsTranscribing(true);
     
     try {
-      // Create audio blob from chunks
-      const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
-      
       // Create form data for API
       const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
+      
+      // Use ref chunks for immediate access
+      const chunksToUse = audioChunksRef.current.length > 0 ? audioChunksRef.current : audioChunks;
+      
+      // Create audio blob from chunks - use audio/webm without codecs for Sarvam API compatibility
+      const audioBlob = new Blob(chunksToUse, { type: 'audio/webm' });
+      
+      if (audioBlob.size === 0) {
+        
+        // Try to get audio data directly from the stream
+        if (audioStream) {
+          const audioContext = new AudioContext();
+          const source = audioContext.createMediaStreamSource(audioStream);
+          const processor = audioContext.createScriptProcessor(4096, 1, 1);
+          
+          const audioData: Float32Array[] = [];
+          
+          processor.onaudioprocess = (event) => {
+            const inputData = event.inputBuffer.getChannelData(0);
+            audioData.push(new Float32Array(inputData));
+          };
+          
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+          
+          // Wait a bit to collect some audio data
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          processor.disconnect();
+          source.disconnect();
+          audioContext.close();
+          
+          if (audioData.length > 0) {
+            // Convert Float32Array to WAV format (simplified)
+            const wavBlob = createWavBlob(audioData, audioContext.sampleRate);
+            formData.append('audio', wavBlob, 'recording.wav');
+          } else {
+            throw new Error('No audio data recorded. Please check your microphone and try again.');
+          }
+        } else {
+          throw new Error('No audio data recorded. Please speak louder or try again.');
+        }
+      } else {
+        formData.append('audio', audioBlob, 'recording.webm');
+      }
+      
       
       // Send to our API route
       const response = await fetch('/api/transcribe', {
@@ -172,31 +338,27 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       });
       
       if (!response.ok) {
-        throw new Error('Transcription failed');
+        throw new Error(`Transcription failed: ${response.status}`);
       }
       
       const result = await response.json();
       
-      if (result.success) {
+      if (result.success && result.transcript) {
         setTranscribedText(result.transcript);
-        console.log('Transcription result:', result);
+        
+        // Auto-use the transcribed text in the search input
+        onResult(result.transcript);
       } else {
-        setError(result.error || 'Transcription failed');
+        setError(result.error || 'No transcript received');
       }
       
     } catch (err) {
-      console.error('Transcription error:', err);
-      setError('Failed to transcribe audio. Please try again.');
+      setError(`Failed to transcribe audio: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setIsTranscribing(false);
     }
   };
 
-  const handleSubmit = () => {
-    if (transcribedText.trim()) {
-      onResult(transcribedText);
-    }
-  };
 
   const handleClose = () => {
     if (isRecording) {
@@ -211,9 +373,13 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     
     setMediaRecorder(null);
     setAudioChunks([]);
+    audioChunksRef.current = []; // Clear ref chunks
     setTranscribedText("");
     setError(null);
     setIsTranscribing(false);
+    setIsRequestingPermission(false);
+    setIsInitializingRecorder(false);
+    setRecordingStartTime(null);
     onClose();
   };
 
@@ -221,19 +387,10 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   useEffect(() => {
     const checkPermissionStatus = async () => {
       // Debug information
-      console.log("=== MICROPHONE DEBUG INFO ===");
-      console.log("Current URL:", location.href);
-      console.log("Protocol:", location.protocol);
-      console.log("Hostname:", location.hostname);
-      console.log("Is secure context:", window.isSecureContext);
-      console.log("navigator.mediaDevices exists:", !!navigator.mediaDevices);
-      console.log("getUserMedia exists:", !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
-      console.log("=============================");
 
       if (navigator.permissions) {
         try {
           const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-          console.log("Microphone permission status:", permission.state);
           
           if (permission.state === 'granted') {
             setPermissionGranted(true);
@@ -242,19 +399,19 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
             setPermissionGranted(false);
           }
           
-          // Listen for permission changes
-          permission.onchange = () => {
-            console.log("Permission changed to:", permission.state);
-            if (permission.state === 'granted') {
-              setPermissionGranted(true);
-              setError(null);
-            } else if (permission.state === 'denied') {
-              setPermissionGranted(false);
-              setError("Microphone access is blocked. Please enable it in your browser settings.");
-            }
-          };
-        } catch (err) {
-          console.log("Could not check permission status:", err);
+          // Listen for permission changes (only set once)
+          if (!permission.onchange) {
+            permission.onchange = () => {
+              if (permission.state === 'granted') {
+                setPermissionGranted(true);
+                setError(null);
+              } else if (permission.state === 'denied') {
+                setPermissionGranted(false);
+                setError("Microphone access is blocked. Please enable it in your browser settings.");
+              }
+            };
+          }
+        } catch {
         }
       }
     };
@@ -262,20 +419,77 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     checkPermissionStatus();
   }, []);
 
-  // Reset state when sheet opens and auto-request permission
+  // Reset state when sheet opens and auto-start recording
   useEffect(() => {
     if (isOpen) {
+      // Clear all states for new session
       setTranscribedText("");
       setError(null);
       setIsRecording(false);
       setIsListening(false);
+      setIsTranscribing(false);
+      setIsInitializingRecorder(false);
+      setRecordingDuration(0);
+      setRecordingStartTime(null);
+      setAudioChunks([]);
+      audioChunksRef.current = [];
+      hasAutoStarted.current = false; // Reset auto-start flag
       
-      // Auto-request microphone permission when sheet opens
-      if (!permissionGranted) {
-        requestMicrophonePermission();
+      // Clear any existing timeout
+      if (autoStartTimeoutRef.current) {
+        clearTimeout(autoStartTimeoutRef.current);
+      }
+      
+      // Auto-request permission and start recording (only once)
+      if (!hasAutoStarted.current) {
+        hasAutoStarted.current = true;
+        autoStartTimeoutRef.current = setTimeout(async () => {
+          // First request permission, then start recording
+          await requestMicrophonePermission();
+          // Start recording immediately after permission is granted
+          setTimeout(() => {
+            startRecording();
+          }, 200); // Small delay to ensure permission is processed
+        }, 100); // Small delay to ensure sheet is fully open
+      }
+    } else {
+      // Reset auto-start flag when sheet closes
+      hasAutoStarted.current = false;
+      // Clear timeout if sheet closes
+      if (autoStartTimeoutRef.current) {
+        clearTimeout(autoStartTimeoutRef.current);
+        autoStartTimeoutRef.current = null;
       }
     }
-  }, [isOpen, permissionGranted, requestMicrophonePermission]);
+  }, [isOpen]); // Removed requestMicrophonePermission from dependencies
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (autoStartTimeoutRef.current) {
+        clearTimeout(autoStartTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Update recording duration timer
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    
+    if (isRecording && recordingStartTime) {
+      interval = setInterval(() => {
+        setRecordingDuration(Math.floor((Date.now() - recordingStartTime) / 1000));
+      }, 100);
+    } else {
+      setRecordingDuration(0);
+    }
+    
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [isRecording, recordingStartTime]);
 
   return (
     <Sheet open={isOpen} onOpenChange={handleClose}>
@@ -332,10 +546,24 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
               </div>
             ) : isTranscribing ? (
               <p className="text-muted-foreground">Transcribing...</p>
+            ) : isInitializingRecorder ? (
+              <p className="text-muted-foreground">Initializing recorder...</p>
             ) : isListening ? (
-              <p className="text-muted-foreground">Listening...</p>
+              <div className="space-y-1">
+                <p className="text-muted-foreground">Listening...</p>
+                {recordingDuration > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Recording: {recordingDuration}s
+                  </p>
+                )}
+              </div>
             ) : transcribedText ? (
-              <p className="text-foreground font-medium">&ldquo;{transcribedText}&rdquo;</p>
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">Transcription:</p>
+                <p className="text-foreground font-medium text-lg bg-muted p-3 rounded-lg border">
+                  &ldquo;{transcribedText}&rdquo;
+                </p>
+              </div>
             ) : (
               <p className="text-muted-foreground">
                 {permissionGranted 
@@ -355,6 +583,13 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                 </span>
                 Transcribing...
               </Button>
+            ) : isInitializingRecorder ? (
+              <Button disabled className="px-6 mobile-tap">
+                <span className="material-symbols-outlined mr-2 animate-spin" style={{ fontSize: '16px' }}>
+                  hourglass_empty
+                </span>
+                Initializing...
+              </Button>
             ) : isRecording || isListening ? (
               <Button 
                 onClick={stopRecording} 
@@ -366,27 +601,15 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                 </span>
                 Stop Recording
               </Button>
-            ) : permissionGranted ? (
-              <Button onClick={startRecording} className="px-6 mobile-tap">
-                <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
-                  mic
-                </span>
-                Start Recording
-              </Button>
-            ) : (
+            ) : !permissionGranted ? (
               <Button onClick={requestMicrophonePermission} className="px-6 mobile-tap">
                 <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
                   mic
                 </span>
                 Allow Microphone
               </Button>
-            )}
+            ) : null}
 
-            {transcribedText && !isTranscribing && (
-              <Button onClick={handleSubmit} className="px-6 mobile-tap">
-                Use This Text
-              </Button>
-            )}
           </div>
         </div>
       </SheetContent>
