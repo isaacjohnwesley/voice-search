@@ -38,6 +38,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const audioChunksRef = useRef<Blob[]>([]);
   const hasAutoStarted = useRef(false);
   const autoStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasManuallyStopped = useRef(false);
   
 
   // Audio recording refs (from sarvam-api-feature branch)
@@ -232,14 +233,14 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     return new Blob([buffer], { type: 'audio/wav' });
   };
 
-  const requestMicrophonePermission = useCallback(async () => {
+  const requestMicrophonePermission = useCallback(async (): Promise<boolean> => {
     if (isRequestingPermission) {
-      return;
+      return false;
     }
     
     // Don't start recording if already recording
     if (isRecording) {
-      return;
+      return false;
     }
     
     setIsRequestingPermission(true);
@@ -256,7 +257,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
         
         if (!getUserMedia) {
           setError("Microphone access is not supported in this browser. Please use a modern browser like Chrome, Firefox, or Safari.");
-          return;
+          return false;
         }
       }
 
@@ -269,7 +270,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       
       if (!isSecureContext) {
         setError("Microphone access requires a secure connection. Please use localhost or HTTPS.");
-        return;
+        return false;
       }
 
       
@@ -286,11 +287,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       
       // Stop the stream immediately as we just needed permission
       stream.getTracks().forEach(track => track.stop());
-      
-      // Auto-start recording after permission is granted
-      setTimeout(() => {
-        startRecording();
-      }, 100);
+      return true;
     } catch (err: unknown) {
       
       let errorMessage = "Microphone permission denied.";
@@ -313,6 +310,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       
       setError(errorMessage);
       setPermissionGranted(false);
+      return false;
     } finally {
       setIsRequestingPermission(false);
     }
@@ -320,8 +318,10 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
 
   const startRecording = async () => {
     if (!permissionGranted) {
-      requestMicrophonePermission();
-      return;
+      const granted = await requestMicrophonePermission();
+      if (!granted) {
+        return;
+      }
     }
     
     try {
@@ -445,6 +445,9 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
         return;
       }
       
+      // Mark that user manually stopped recording
+      hasManuallyStopped.current = true;
+      
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       setIsListening(false);
@@ -527,32 +530,35 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       setIsListening(false);
       setIsTranscribing(false);
       setIsInitializingRecorder(false);
+      setIsProcessing(false);
       setRecordingDuration(0);
       setRecordingStartTime(null);
       setAudioChunks([]);
       audioChunksRef.current = [];
-      hasAutoStarted.current = false; // Reset auto-start flag
       
       // Clear any existing timeout
       if (autoStartTimeoutRef.current) {
         clearTimeout(autoStartTimeoutRef.current);
       }
       
-      // Auto-request permission and start recording (only once)
-      if (!hasAutoStarted.current) {
+      // Auto-request permission and start recording (only once per session and if not manually stopped)
+      if (!hasAutoStarted.current && !hasManuallyStopped.current) {
         hasAutoStarted.current = true;
         autoStartTimeoutRef.current = setTimeout(async () => {
-          // First request permission, then start recording
-          await requestMicrophonePermission();
-          // Start recording immediately after permission is granted
-          setTimeout(() => {
-            startRecording();
-          }, 200); // Small delay to ensure permission is processed
+          // First request permission
+          const permissionGranted = await requestMicrophonePermission();
+          // Only start recording if permission was granted and we haven't been manually stopped
+          if (permissionGranted && !hasManuallyStopped.current) {
+            setTimeout(() => {
+              startRecording();
+            }, 200); // Small delay to ensure permission is processed
+          }
         }, 100); // Small delay to ensure sheet is fully open
       }
     } else {
       // Reset auto-start flag when sheet closes
       hasAutoStarted.current = false;
+      hasManuallyStopped.current = false; // Reset manual stop flag for next session
       // Clear timeout if sheet closes
       if (autoStartTimeoutRef.current) {
         clearTimeout(autoStartTimeoutRef.current);
@@ -728,6 +734,15 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
             {transcribedText && !isProcessing && (
               <Button onClick={() => onResult(transcribedText)} className="px-6 mobile-tap">
                 Use This Text
+              </Button>
+            )}
+
+            {hasManuallyStopped.current && !isRecording && !isProcessing && !transcribedText && (
+              <Button onClick={startRecording} className="px-6 mobile-tap">
+                <span className="material-symbols-outlined mr-2" style={{ fontSize: '16px' }}>
+                  mic
+                </span>
+                Start Recording
               </Button>
             )}
           </div>
