@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Mic, Square, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -27,9 +27,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const [isInitializingRecorder, setIsInitializingRecorder] = useState(false);
 
   // MediaRecorder and audio stream references
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
-  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [isRequestingPermission, setIsRequestingPermission] = useState(false);
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
@@ -140,7 +138,6 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
 
   // Helper function to resample audio buffer
   const resampleAudioBuffer = async (audioBuffer: AudioBuffer, targetSampleRate: number): Promise<AudioBuffer> => {
-    const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
     const offlineContext = new OfflineAudioContext(1, audioBuffer.duration * targetSampleRate, targetSampleRate);
     
     const source = offlineContext.createBufferSource();
@@ -191,46 +188,6 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     }
     
     return arrayBuffer;
-  };
-
-  // Helper function to create WAV blob from audio data (from HEAD branch)
-  const createWavBlob = (audioData: Float32Array[], sampleRate: number): Blob => {
-    const length = audioData.reduce((sum, chunk) => sum + chunk.length, 0);
-    const buffer = new ArrayBuffer(44 + length * 2);
-    const view = new DataView(buffer);
-    
-    // WAV header
-    const writeString = (offset: number, string: string) => {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
-    };
-    
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, length * 2, true);
-    
-    // Convert float32 to int16
-    let offset = 44;
-    for (const chunk of audioData) {
-      for (let i = 0; i < chunk.length; i++) {
-        const sample = Math.max(-1, Math.min(1, chunk[i]));
-        view.setInt16(offset, sample * 0x7FFF, true);
-        offset += 2;
-      }
-    }
-    
-    return new Blob([buffer], { type: 'audio/wav' });
   };
 
   const requestMicrophonePermission = useCallback(async (): Promise<boolean> => {
@@ -393,7 +350,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
           try {
             transcript = await transcribeAudio(audioBlob);
             console.log('Received transcript from original audio:', transcript);
-          } catch (error) {
+          } catch {
             console.log('Original audio failed, trying WAV conversion...');
             // Fallback to WAV conversion
             const wavBlob = await convertToWav(audioBlob);
@@ -471,8 +428,6 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       streamRef.current = null;
     }
     
-    setMediaRecorder(null);
-    setAudioChunks([]);
     audioChunksRef.current = []; // Clear ref chunks
     setTranscribedText("");
     setError(null);
@@ -533,7 +488,6 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       setIsProcessing(false);
       setRecordingDuration(0);
       setRecordingStartTime(null);
-      setAudioChunks([]);
       audioChunksRef.current = [];
       
       // Clear any existing timeout
