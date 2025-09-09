@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-// import { Square } from "lucide-react";
+import { Mic, Square, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -20,6 +20,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const [isRecording, setIsRecording] = useState(false);
   const [transcribedText, setTranscribedText] = useState("");
   const [isListening, setIsListening] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -39,7 +40,159 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
   const autoStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
 
-  // Helper function to create WAV blob from audio data
+  // Audio recording refs (from sarvam-api-feature branch)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Sarvam API integration
+  const transcribeAudio = async (audioBlob: Blob): Promise<string> => {
+    const formData = new FormData();
+    
+    // Create a new blob with the correct MIME type for the API
+    let apiBlob = audioBlob;
+    let fileName = 'recording.wav';
+    
+    if (audioBlob.type.includes('webm')) {
+      // Convert webm;codecs=opus to plain webm for API compatibility
+      apiBlob = new Blob([audioBlob], { type: 'audio/webm' });
+      fileName = 'recording.webm';
+    } else if (audioBlob.type.includes('mp4')) {
+      fileName = 'recording.mp4';
+    }
+    
+    formData.append('file', apiBlob, fileName);
+    
+    // Add optional parameters to improve transcription
+    formData.append('model', 'saaras:v2.5');
+    
+    // Add a prompt to help with context (as suggested in documentation)
+    formData.append('prompt', 'User is asking for directions or location information. This is a voice search for navigation.');
+    
+    const apiKey = process.env.NEXT_PUBLIC_SARVAM_API_KEY;
+    console.log('API Key available:', !!apiKey);
+    console.log('Original audio blob size:', audioBlob.size, 'bytes');
+    console.log('Original audio blob type:', audioBlob.type);
+    console.log('API blob type:', apiBlob.type);
+    console.log('File name:', fileName);
+    
+    try {
+      const response = await fetch('https://api.sarvam.ai/speech-to-text-translate', {
+        method: 'POST',
+        headers: {
+          'api-subscription-key': apiKey || '',
+        },
+        body: formData,
+      });
+
+      console.log('API Response status:', response.status);
+      console.log('API Response headers:', Object.fromEntries(response.headers.entries()));
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API Error response:', errorText);
+        throw new Error(`Sarvam API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('API Response data:', data);
+      console.log('Transcript:', data.transcript);
+      console.log('Language detected:', data.language_code);
+      
+      // If transcript is empty, provide a helpful message
+      if (!data.transcript || data.transcript.trim() === '') {
+        console.warn('Empty transcript received from API');
+        return 'No speech detected. Please try speaking more clearly and loudly.';
+      }
+      
+      return data.transcript || '';
+    } catch (error) {
+      console.error('Transcription error:', error);
+      throw new Error('Failed to transcribe audio. Please try again.');
+    }
+  };
+
+  // Convert audio blob to WAV format
+  const convertToWav = async (audioBlob: Blob): Promise<Blob> => {
+    try {
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      
+      // Set sample rate to 16kHz as required by Sarvam
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      // Resample to 16kHz if needed
+      let processedBuffer = audioBuffer;
+      if (audioBuffer.sampleRate !== 16000) {
+        console.log(`Resampling from ${audioBuffer.sampleRate}Hz to 16000Hz`);
+        processedBuffer = await resampleAudioBuffer(audioBuffer, 16000);
+      }
+      
+      // Convert to WAV format
+      const wavBuffer = audioBufferToWav(processedBuffer);
+      return new Blob([wavBuffer], { type: 'audio/wav' });
+    } catch (error) {
+      console.error('WAV conversion error:', error);
+      // Fallback: return original blob if conversion fails
+      return audioBlob;
+    }
+  };
+
+  // Helper function to resample audio buffer
+  const resampleAudioBuffer = async (audioBuffer: AudioBuffer, targetSampleRate: number): Promise<AudioBuffer> => {
+    const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    const offlineContext = new OfflineAudioContext(1, audioBuffer.duration * targetSampleRate, targetSampleRate);
+    
+    const source = offlineContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineContext.destination);
+    source.start();
+    
+    return await offlineContext.startRendering();
+  };
+
+  // Helper function to convert AudioBuffer to WAV
+  const audioBufferToWav = (buffer: AudioBuffer): ArrayBuffer => {
+    const length = buffer.length;
+    const sampleRate = buffer.sampleRate;
+    const numberOfChannels = buffer.numberOfChannels;
+    const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+    const view = new DataView(arrayBuffer);
+    
+    // WAV header
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numberOfChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+    view.setUint16(32, numberOfChannels * 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, length * numberOfChannels * 2, true);
+    
+    // Convert audio data
+    let offset = 44;
+    for (let i = 0; i < length; i++) {
+      for (let channel = 0; channel < numberOfChannels; channel++) {
+        const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+        offset += 2;
+      }
+    }
+    
+    return arrayBuffer;
+  };
+
+  // Helper function to create WAV blob from audio data (from HEAD branch)
   const createWavBlob = (audioData: Float32Array[], sampleRate: number): Blob => {
     const length = audioData.reduce((sum, chunk) => sum + chunk.length, 0);
     const buffer = new ArrayBuffer(44 + length * 2);
@@ -171,195 +324,132 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       return;
     }
     
-    // Check if already recording
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      return;
-    }
-    
-    // If MediaRecorder is not initialized, set it up now
-    if (!mediaRecorder || !audioStream) {
-      setIsInitializingRecorder(true);
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
+    try {
+      // Get media stream with optimized settings for speech recognition
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 16000, // 16kHz as recommended by Sarvam
+          channelCount: 1, // Mono audio
+        }
+      });
+      
+      streamRef.current = stream;
+      audioChunksRef.current = [];
+      
+      // Create MediaRecorder with WebM format (most compatible with browsers)
+      // We'll convert to WAV later for the API
+      let mimeType = 'audio/webm';
+      
+      // Check which WebM format is supported
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        mimeType = 'audio/webm;codecs=opus';
+      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        mimeType = 'audio/webm';
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        mimeType = 'audio/mp4';
+      }
+      
+      console.log('Using MIME type:', mimeType);
+      console.log('MediaRecorder supported types:', [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/wav'
+      ].filter(type => MediaRecorder.isTypeSupported(type)));
+      
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: mimeType,
+        audioBitsPerSecond: 128000 // Higher bitrate for better quality
+      });
+      
+      mediaRecorderRef.current = mediaRecorder;
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = async () => {
+        try {
+          setIsProcessing(true);
+          setError(null);
+          
+          console.log('Audio recording stopped, processing...');
+          console.log('Audio chunks count:', audioChunksRef.current.length);
+          
+          // Create audio blob
+          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+          console.log('Original audio blob size:', audioBlob.size, 'bytes');
+          console.log('Original audio blob type:', audioBlob.type);
+          
+          // Try sending the original audio first (WebM is supported by Sarvam)
+          console.log('Sending original audio to Sarvam API...');
+          let transcript = '';
+          
+          try {
+            transcript = await transcribeAudio(audioBlob);
+            console.log('Received transcript from original audio:', transcript);
+          } catch (error) {
+            console.log('Original audio failed, trying WAV conversion...');
+            // Fallback to WAV conversion
+            const wavBlob = await convertToWav(audioBlob);
+            console.log('WAV blob size:', wavBlob.size, 'bytes');
+            transcript = await transcribeAudio(wavBlob);
+            console.log('Received transcript from WAV:', transcript);
           }
-        });
-        
-        // Try different MIME types for better browser compatibility
-        // Start with audio/webm (without codecs) for Sarvam API compatibility
-        let mimeType = 'audio/webm';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'audio/webm;codecs=opus';
-          if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = 'audio/mp4';
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-              mimeType = ''; // Let browser choose
-            }
+          
+          setTranscribedText(transcript);
+          setIsProcessing(false);
+        } catch (error) {
+          console.error('Processing error:', error);
+          setError(error instanceof Error ? error.message : 'Failed to process audio');
+          setIsProcessing(false);
+        } finally {
+          // Clean up stream
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+            streamRef.current = null;
           }
         }
-        
-        
-        const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-        
-        setMediaRecorder(recorder);
-        setAudioStream(stream);
-        
-        // Set up event handlers
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            // Store in ref for immediate access
-            audioChunksRef.current.push(event.data);
-            // Also update state for UI purposes
-            setAudioChunks(prev => [...prev, event.data]);
-          }
-        };
-        
-        recorder.onstop = () => {
-          handleRecordingStop();
-        };
-        
-        recorder.onerror = () => {
-          setError('Recording error occurred');
-        };
-        
-        // Now start recording
-        setIsRecording(true);
-        setIsListening(true);
-        setTranscribedText("");
-        setError(null);
-        setAudioChunks([]);
-        audioChunksRef.current = []; // Clear ref chunks
-        
-        recorder.start(100); // Collect data every 100ms for better responsiveness
-        setRecordingStartTime(Date.now());
-        setIsInitializingRecorder(false);
-        return;
-        
-      } catch {
-        setError("Failed to initialize recording. Please try again.");
-        setIsInitializingRecorder(false);
-        return;
-      }
+      };
+      
+      setIsRecording(true);
+      setIsListening(true);
+      setTranscribedText("");
+      setError(null);
+      
+      // Start recording with time slices for better quality
+      mediaRecorder.start(100); // Record in 100ms chunks
+    } catch (error) {
+      console.error('Recording error:', error);
+      setError('Failed to start recording. Please try again.');
+      setIsRecording(false);
+      setIsListening(false);
     }
-    
-    setIsRecording(true);
-    setIsListening(true);
-    setTranscribedText("");
-    setError(null);
-    setAudioChunks([]);
-    
-    // Start recording
-    mediaRecorder.start(100); // Collect data every 100ms for better responsiveness
-    setRecordingStartTime(Date.now());
   };
 
   const stopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      const recordingDuration = recordingStartTime ? Date.now() - recordingStartTime : 0;
+    if (mediaRecorderRef.current && isRecording) {
+      // Check if we have enough audio data
+      const totalSize = audioChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0);
+      console.log('Total audio size before stopping:', totalSize, 'bytes');
       
-      // Ensure minimum recording time of 500ms
-      if (recordingDuration < 500) {
-        setTimeout(() => {
-          if (mediaRecorder && mediaRecorder.state === 'recording') {
-            mediaRecorder.stop();
-          }
-        }, 500 - recordingDuration);
-      } else {
-        // Request all remaining data before stopping
-        mediaRecorder.requestData();
-        setTimeout(() => {
-          mediaRecorder.stop();
-        }, 100);
-      }
-    }
-    setIsRecording(false);
-    setIsListening(false);
-  };
-
-  const handleRecordingStop = async () => {
-    setIsTranscribing(true);
-    
-    try {
-      // Create form data for API
-      const formData = new FormData();
-      
-      // Use ref chunks for immediate access
-      const chunksToUse = audioChunksRef.current.length > 0 ? audioChunksRef.current : audioChunks;
-      
-      // Create audio blob from chunks - use audio/webm without codecs for Sarvam API compatibility
-      const audioBlob = new Blob(chunksToUse, { type: 'audio/webm' });
-      
-      if (audioBlob.size === 0) {
-        
-        // Try to get audio data directly from the stream
-        if (audioStream) {
-          const audioContext = new AudioContext();
-          const source = audioContext.createMediaStreamSource(audioStream);
-          const processor = audioContext.createScriptProcessor(4096, 1, 1);
-          
-          const audioData: Float32Array[] = [];
-          
-          processor.onaudioprocess = (event) => {
-            const inputData = event.inputBuffer.getChannelData(0);
-            audioData.push(new Float32Array(inputData));
-          };
-          
-          source.connect(processor);
-          processor.connect(audioContext.destination);
-          
-          // Wait a bit to collect some audio data
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          processor.disconnect();
-          source.disconnect();
-          audioContext.close();
-          
-          if (audioData.length > 0) {
-            // Convert Float32Array to WAV format (simplified)
-            const wavBlob = createWavBlob(audioData, audioContext.sampleRate);
-            formData.append('audio', wavBlob, 'recording.wav');
-          } else {
-            throw new Error('No audio data recorded. Please check your microphone and try again.');
-          }
-        } else {
-          throw new Error('No audio data recorded. Please speak louder or try again.');
-        }
-      } else {
-        formData.append('audio', audioBlob, 'recording.webm');
+      if (totalSize < 1000) { // Less than 1KB is probably too short
+        setError('Recording too short. Please speak for at least 2-3 seconds.');
+        setIsRecording(false);
+        setIsListening(false);
+        return;
       }
       
-      
-      // Send to our API route
-      const response = await fetch('/api/transcribe', {
-        method: 'POST',
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Transcription failed: ${response.status}`);
-      }
-      
-      const result = await response.json();
-      
-      if (result.success && result.transcript) {
-        setTranscribedText(result.transcript);
-        
-        // Auto-use the transcribed text in the search input
-        onResult(result.transcript);
-      } else {
-        setError(result.error || 'No transcript received');
-      }
-      
-    } catch (err) {
-      setError(`Failed to transcribe audio: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      setIsTranscribing(false);
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      setIsListening(false);
     }
   };
-
 
   const handleClose = () => {
     if (isRecording) {
@@ -372,6 +462,11 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
       setAudioStream(null);
     }
     
+    // Clean up any remaining stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
     
     setMediaRecorder(null);
     setAudioChunks([]);
@@ -382,6 +477,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
     setIsRequestingPermission(false);
     setIsInitializingRecorder(false);
     setRecordingStartTime(null);
+    setIsProcessing(false);
     onClose();
   };
 
@@ -550,6 +646,11 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
               <p className="text-muted-foreground">Transcribing...</p>
             ) : isInitializingRecorder ? (
               <p className="text-muted-foreground">Initializing recorder...</p>
+            ) : isProcessing ? (
+              <div className="flex items-center justify-center space-x-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <p className="text-muted-foreground">Processing audio...</p>
+              </div>
             ) : isListening ? (
               <div className="space-y-1">
                 <p className="text-muted-foreground">Listening... Click &ldquo;Stop Now&rdquo; when finished</p>
@@ -558,6 +659,7 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                     Recording: {recordingDuration}s
                   </p>
                 )}
+                <p className="text-xs text-muted-foreground">Speak for at least 2-3 seconds for best results</p>
               </div>
             ) : transcribedText ? (
               <div className="space-y-2">
@@ -565,14 +667,20 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                 <p className="text-foreground font-medium text-lg bg-muted p-3 rounded-lg border">
                   &ldquo;{transcribedText}&rdquo;
                 </p>
+                <p className="text-xs text-muted-foreground">Transcribed and translated to English</p>
               </div>
             ) : (
-              <p className="text-muted-foreground">
-                {permissionGranted 
-                  ? "Tap the microphone to start speaking" 
-                  : "Allow microphone access to use voice search"
-                }
-              </p>
+              <div className="space-y-2">
+                <p className="text-muted-foreground">
+                  {permissionGranted 
+                    ? "Tap the microphone to start speaking" 
+                    : "Allow microphone access to use voice search"
+                  }
+                </p>
+                {permissionGranted && (
+                  <p className="text-xs text-muted-foreground">Speak clearly and loudly for best results</p>
+                )}
+              </div>
             )}
           </div>
 
@@ -591,6 +699,11 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
                   hourglass_empty
                 </span>
                 Initializing...
+              </Button>
+            ) : isProcessing ? (
+              <Button disabled className="px-6 mobile-tap">
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Processing...
               </Button>
             ) : isRecording || isListening ? (
               <Button 
@@ -612,6 +725,11 @@ export function VoiceInputSheet({ isOpen, onClose, onResult }: VoiceInputSheetPr
               </Button>
             ) : null}
 
+            {transcribedText && !isProcessing && (
+              <Button onClick={() => onResult(transcribedText)} className="px-6 mobile-tap">
+                Use This Text
+              </Button>
+            )}
           </div>
         </div>
       </SheetContent>
