@@ -115,7 +115,7 @@ export function SearchResultsDropdown({
         </div>
       ) : places.length === 0 ? (
         <div className="p-4 text-center">
-          <p className="text-sm text-muted-foreground">No places found for "{query}"</p>
+            <p className="text-sm text-muted-foreground">No places found for &ldquo;{query}&rdquo;</p>
         </div>
       ) : (
         <div className="py-1">

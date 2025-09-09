@@ -30,7 +30,20 @@ export async function GET(request: NextRequest) {
     }
 
     // Transform the results to a cleaner format
-    const places = data.results?.map((place: any) => ({
+    const places = data.results?.map((place: {
+      place_id: string;
+      name: string;
+      formatted_address: string;
+      geometry?: { location: { lat: number; lng: number } };
+      rating?: number;
+      price_level?: number;
+      types: string[];
+      photos?: Array<{
+        photo_reference: string;
+        height: number;
+        width: number;
+      }>;
+    }) => ({
       id: place.place_id,
       name: place.name,
       address: place.formatted_address,
@@ -38,7 +51,11 @@ export async function GET(request: NextRequest) {
       rating: place.rating,
       priceLevel: place.price_level,
       types: place.types,
-      photos: place.photos?.map((photo: any) => ({
+      photos: place.photos?.map((photo: {
+        photo_reference: string;
+        height: number;
+        width: number;
+      }) => ({
         reference: photo.photo_reference,
         height: photo.height,
         width: photo.width

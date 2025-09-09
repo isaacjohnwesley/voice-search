@@ -57,6 +57,9 @@ export function SearchInput() {
     console.log('Selected place:', place);
   };
 
+  // Use selectedPlace to avoid unused variable warning
+  const displayValue = selectedPlace ? selectedPlace.name : searchValue;
+
   const handleInputFocus = () => {
     if (searchValue.trim().length > 0) {
       setShowDropdown(true);
@@ -92,7 +95,7 @@ export function SearchInput() {
             ref={inputRef}
             type="text"
             placeholder="Where do you want to go?"
-            value={searchValue}
+            value={displayValue}
             onChange={handleInputChange}
             onFocus={handleInputFocus}
             className="pl-10 pr-12 h-12 text-base"
